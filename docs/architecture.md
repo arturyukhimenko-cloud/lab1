@@ -1,62 +1,42 @@
-# Карта архітектури
+# Архітектура системи (SecureLab - Лабораторна робота 1)
 
-## Компоненти
+## 1. Компоненти системи
+- **Browser Client**: Вебклієнт на HTML/JS у `src/SecureLab.Api/Client/` для взаємодії з інтерфейсом.
+- **ASP.NET Core API**: Бекенд-додаток на .NET 10, що реалізує Minimal API ендпоінти.
+- **EF Core**: ORM для мапінгу даних і виконання LINQ-запитів до бази даних.
+- **PostgreSQL у Docker Compose**: Ізольована реляційна база даних, що розгортається через `infra/compose.yaml`.
 
-| Компонент | Розташування | Відповідальність |
-|---|---|---|
-| Browser client | `src/SecureLab.Api/Client/` | Надсилає HTTP-запити, безпечно показує відповідь через DOM API |
-| Presentation | `Presentation/` | Описує endpoints, читає зовнішні параметри, формує HTTP-відповідь |
-| Application | `Application/` | Виконує сценарій отримання списку, деталей інциденту або підсумку за severity |
-| Data | `Data/` | Відображає C#-сутності на PostgreSQL через EF Core/Npgsql |
-| PostgreSQL | `infra/compose.yaml` | Зберігає навчальні дані у локальному контейнері |
+## 2. Вибраний маршрут (Severity Summary)
+- **Метод і URL**: `GET /api/incidents/severity-summary`
+- **Ланцюжок викликів**:
+  кнопка summary у `Client/index.html`
+  → handler у `Client/app.js`
+  → `GET /api/incidents/severity-summary`
+  → `IncidentEndpoints.cs`
+  → `IncidentQueries.cs` (`GetSeveritySummaryAsync`)
+  → `SecureLabDbContext.Incidents` / таблиця `incidents`
+  → `IncidentSeveritySummaryResponse` (DTO) як JSON
+  → виведення через `textContent` у `Client/app.js`
 
-## Наскрізний маршрут: деталі інциденту
+## 3. Ключові файли
+- **Клієнт**: `src/SecureLab.Api/Client/index.html`, `src/SecureLab.Api/Client/app.js`
+- **Endpoint**: `src/SecureLab.Api/Presentation/Endpoints/IncidentEndpoints.cs`
+- **Application Layer**: `src/SecureLab.Api/Application/Incidents/IncidentQueries.cs`
+- **DTO**: `src/SecureLab.Api/Presentation/Contracts/IncidentResponses.cs`
+- **DbContext і таблиця**: `src/SecureLab.Api/Infrastructure/Persistence/SecureLabDbContext.cs` (таблиця `incidents`)
 
-    клік по картці інциденту у Client/app.js
-      → GET /api/incidents/{id}
-      → Presentation/Endpoints/IncidentEndpoints.cs (GetDetailsAsync)
-      → Application/Incidents/IncidentQueries.cs (GetDetailsAsync)
-      → Data/SecureLabDbContext.cs (DbSet<Incident>)
-      → PostgreSQL: таблиця incidents
-      → IncidentDetailsResponse
-      → JSON
-      → textContent/createTextNode у Client/app.js
+## 4. Межі довіри та дані
+| Межа або перехід | Дані, що її перетинають | Контроль / Захист |
+| :--- | :--- | :--- |
+| **Браузер → API** | URL-параметри, шляхи запитів та HTTP-запити | Валідація маршрутів у Minimal API |
+| **API → PostgreSQL** | LINQ-запити через EF Core | Використання `.AsNoTracking()`, параметризовані запити |
+| **API → Браузер** | JSON-відповідь (DTO без чутливих полів) | Проєкція даних (`Select`), захист від XSS через `textContent` |
 
-## Наскрізний маршрут: підсумок за severity (реалізовано в ЛР 1)
+## 5. Конфігураційні входи
+- `global.json`: фіксація версії SDK.
+- `appsettings*.json`: конфігурація логування та параметрів середовища.
+- `infra/compose.yaml`: конфігурація контейнера PostgreSQL та volume.
+- Змінна середовища `ConnectionStrings__SecureLab`: рядок підключення до БД (без збереження реальних паролів/секретів у відкритому вигляді).
 
-    клік по кнопці "Показати підсумок" у Client/index.html
-      → обробник loadSeveritySummary у Client/app.js
-      → GET /api/incidents/severity-summary
-      → Presentation/Endpoints/IncidentEndpoints.cs (GetSeveritySummaryAsync)
-      → Application/Incidents/IncidentQueries.cs (GetSeveritySummaryAsync)
-      → Data/SecureLabDbContext.cs (DbSet<Incident>, GroupBy Severity)
-      → PostgreSQL: таблиця incidents
-      → IncidentSeveritySummaryResponse (масив)
-      → JSON
-      → textContent у Client/app.js
-
-**Політика нульових груп**: обрано варіант "повний перелік рівнів" — після агрегації з БД (`GroupBy` + `Count()`) результат доповнюється значеннями `Enum.GetValues<IncidentSeverity>()`, тому відповідь завжди містить усі 4 рівні критичності (`Low`, `Medium`, `High`, `Critical`), навіть якщо якийсь із них відсутній у даних (у такому разі `count: 0`).
-
-**Порядок елементів**: сталий лексикографічний порядок за назвою severity (`OrderBy(x => x.Severity)`), оскільки `Severity` зберігається в базі як текст (`HasConversion<string>()`).
-
-## Межі довіри
-
-| Межа | Дані, що її перетинають | Хибне припущення | Контроль у дослідженому маршруті |
-|---|---|---|---|
-| браузер → API | URL-параметри запиту (ідентифікатор `{id}`) | Що вхідний параметр завжди є валідним UUID | Маршрутне обмеження `:guid` у Minimal API (`IncidentEndpoints.cs`) |
-| API → PostgreSQL | LINQ-запит до бази даних (id, GroupBy) | Що прочитані з БД дані потребують механізму відстеження змін | Використання оптимізації `.AsNoTracking()` у `IncidentQueries.cs` |
-| API → браузер | JSON-відповідь (`IncidentDetailsResponse`, `IncidentSeveritySummaryResponse`) | Що клієнту потрібні внутрішні службові поля чи чутливі дані | Проєкція даних (`Select`), що відсікає зайві поля (наприклад, `OwnerUserId` чи email) |
-| дані response → DOM | Поля `title`, `description` із відповіді сервера | Що текстові поля від сервера є безпечним HTML-кодом і не містять шкідливих скриптів | Виведення через властивість `textContent` у `app.js`, що екранує спецсимволи |
-
-## Конфігураційні входи
-
-- `global.json` — версія .NET SDK;
-- `src/SecureLab.Api/appsettings*.json` — режим міграцій і локальний connection string;
-- `infra/compose.yaml` — версія PostgreSQL, порт і локальні навчальні облікові дані;
-- змінна середовища `ConnectionStrings__SecureLab` — безпечний спосіб перевизначити connection string поза репозиторієм.
-
-## Відновлення відомого стану
-
-    dotnet run --no-build --project src/SecureLab.Api -- --reset-database
-
-Команда очищує лише відомі навчальні таблиці й повторно заповнює їх seed-даними; працює лише в Development environment.
+## 6. Спосіб повернення до відомого seed-стану
+Скидання бази даних та повернення до початкового seed-стану виконується шляхом перестворення контейнера Docker Compose із залученням вбудованих міграцій та скриптів ініціалізації бази даних згідно з інструкцією проєкту.

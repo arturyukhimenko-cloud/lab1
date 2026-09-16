@@ -2,6 +2,9 @@ const listElement = document.querySelector("#incident-list");
 const listStatusElement = document.querySelector("#list-status");
 const detailsElement = document.querySelector("#incident-details");
 const filterForm = document.querySelector("#filter-form");
+const summaryButton = document.querySelector("#summary-button");
+const summaryStatusElement = document.querySelector("#summary-status");
+const summaryListElement = document.querySelector("#summary-list");
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(path, {
@@ -102,6 +105,38 @@ async function loadIncidentDetails(id) {
     detailsElement.textContent = `Помилка: ${error.message}`;
   }
 }
+
+async function loadSeveritySummary() {
+  summaryListElement.replaceChildren();
+  summaryStatusElement.textContent = "Завантаження…";
+
+  try {
+    // Враховуємо обраний фільтр статусу з форми
+    const status = filterForm ? new FormData(filterForm).get("status") : "";
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+
+    const summaries = await apiFetch(`/api/incidents/severity-summary${query}`);
+
+    // Підраховуємо загальну кількість інцидентів у масиві
+    const totalCount = summaries.reduce((acc, item) => acc + item.count, 0);
+
+    if (summaries.length === 0 || totalCount === 0) {
+      summaryStatusElement.textContent = "Даних немає.";
+      return;
+    }
+
+    summaryStatusElement.textContent = `Груп: ${summaries.length}`;
+    for (const summary of summaries) {
+      const item = document.createElement("li");
+      item.textContent = `${summary.severity}: ${summary.count}`;
+      summaryListElement.append(item);
+    }
+  } catch (error) {
+    summaryStatusElement.textContent = "Не вдалося завантажити підсумок. Спробуйте пізніше.";
+  }
+}
+
+summaryButton?.addEventListener("click", loadSeveritySummary);
 
 filterForm.addEventListener("submit", (event) => {
   event.preventDefault();

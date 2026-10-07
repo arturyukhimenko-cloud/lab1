@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Identity;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
@@ -37,21 +38,49 @@ public static class Lab03Identity
     {
         app.MapPost("/api/auth/register", async (RegistrationInput input, UserManager<ApplicationUser> users) =>
         {
-            // ЛР 03: завершіть DTO validation та перевірки довірчої межі.
-            if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrWhiteSpace(input.Email)
-                || string.IsNullOrWhiteSpace(input.DisplayName) || string.IsNullOrEmpty(input.Password))
-                return Results.BadRequest();
+            var userName = input.UserName?.Trim();
+            var email = input.Email?.Trim();
+            var displayName = input.DisplayName?.Trim();
+            const string allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._@+";
+
+            if (string.IsNullOrWhiteSpace(userName) || userName.Length > 256
+                || userName.Any(c => !allowed.Contains(c)))
+                return Results.BadRequest(new { message = "Invalid userName" });
+
+            if (string.IsNullOrWhiteSpace(email) || email.Length > 256
+                || !new EmailAddressAttribute().IsValid(email))
+                return Results.BadRequest(new { message = "Invalid email" });
+
+            if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 120
+                || string.IsNullOrEmpty(input.Password))
+                return Results.BadRequest(new { message = "Invalid registration data" });
+
             var user = new ApplicationUser
             {
-                Id = Guid.NewGuid(), UserName = input.UserName.Trim(), Email = input.Email.Trim(),
-                DisplayName = input.DisplayName.Trim()
+                Id = Guid.NewGuid(), UserName = userName, Email = email,
+                DisplayName = displayName
             };
+
             var result = await users.CreateAsync(user, input.Password);
-            if (!result.Succeeded) return Results.BadRequest(new { message = "Registration failed" });
+
+            if (!result.Succeeded)
+            {
+                if (result.Errors.Any(e => e.Code is "DuplicateUserName" or "DuplicateEmail"))
+                    return Results.Problem(
+                        title: "Registration conflict",
+                        statusCode: StatusCodes.Status409Conflict);
+
+                return Results.BadRequest(new { message = "Registration failed" });
+            }
+
             var role = await users.AddToRoleAsync(user, DbSeeder.ReporterRole);
-            if (!role.Succeeded) throw new InvalidOperationException("Default role assignment failed.");
-            return Results.Created("/api/me", new { user.Id, user.UserName, user.DisplayName });
+            if (!role.Succeeded)
+                throw new InvalidOperationException("Default role assignment failed.");
+
+            return Results.Created("/api/me",
+                new RegistrationResponse(user.Id, user.UserName!, user.DisplayName));
         });
+
         app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn) =>
         {
             if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrEmpty(input.Password))
@@ -59,7 +88,9 @@ public static class Lab03Identity
             var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
             return result.Succeeded ? Results.NoContent() : Results.Unauthorized();
         });
+
         app.MapPost("/api/auth/logout", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
+
         // Навмисно хибна навчальна довіра: ЛР 03 замінює заявлений id на verified principal.
         app.MapGet("/api/me", async (HttpContext context, SecureLabDbContext db) =>
         {
@@ -68,10 +99,12 @@ public static class Lab03Identity
             var user = await db.Users.FindAsync(claimedId);
             return user is null ? Results.NotFound() : Results.Ok(new { user.Id, user.UserName, user.DisplayName });
         });
+
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();
     }
 }
 
 public sealed record RegistrationInput(string? UserName, string? Email, string? DisplayName, string? Password);
+public sealed record RegistrationResponse(Guid Id, string UserName, string DisplayName);
 public sealed record LoginInput(string? UserName, string? Password);

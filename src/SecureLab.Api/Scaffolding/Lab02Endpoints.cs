@@ -1,3 +1,5 @@
+
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
@@ -55,7 +57,7 @@ public static class Lab02Endpoints
             }));
         });
 
-        app.MapPost("/api/incidents", async (CreateIncidentRequest request, SecureLabDbContext db, CancellationToken ct) =>
+        app.MapPost("/api/incidents", async (CreateIncidentRequest request, SecureLabDbContext db, HttpContext httpContext, CancellationToken ct) =>
         {
             var now = DateTimeOffset.UtcNow;
             var errors = new Dictionary<string, string[]>();
@@ -109,10 +111,14 @@ public static class Lab02Endpoints
                     statusCode: StatusCodes.Status409Conflict);
             }
 
+            var claim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(claim, out var ownerUserId))
+                return Results.Problem(statusCode: StatusCodes.Status500InternalServerError);
+
             var incident = new Incident
             {
                 Id = Guid.NewGuid(),
-                OwnerUserId = DbSeeder.AliceId,
+                OwnerUserId = ownerUserId,
                 Title = title!,
                 Description = description!,
                 Severity = severity,
@@ -135,7 +141,7 @@ public static class Lab02Endpoints
                 incident.UpdatedAtUtc);
 
             return Results.Created($"/api/incidents/{incident.Id}", response);
-        });
+        }).RequireAuthorization();
     }
 }
 

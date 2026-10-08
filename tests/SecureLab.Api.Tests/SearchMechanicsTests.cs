@@ -1,3 +1,4 @@
+
 using System.Net;
 using System.Net.Http.Json;
 
@@ -18,7 +19,9 @@ public sealed class SearchMechanicsTests(SecureLabApiFactory factory) : IClassFi
     [Fact]
     public async Task T02_InvalidSeverity_Returns400()
     {
-        using var client = factory.CreateClient();
+        var password = Environment.GetEnvironmentVariable("SeedUsers__Password")
+            ?? throw new InvalidOperationException("Set local SeedUsers__Password outside Git.");
+        using var client = await factory.LoginAsync("alice", password);
 
         var request = new
         {
@@ -39,7 +42,9 @@ public sealed class SearchMechanicsTests(SecureLabApiFactory factory) : IClassFi
     [Fact]
     public async Task T03_DuplicateTitle_Returns409()
     {
-        using var client = factory.CreateClient();
+        var password = Environment.GetEnvironmentVariable("SeedUsers__Password")
+            ?? throw new InvalidOperationException("Set local SeedUsers__Password outside Git.");
+        using var client = await factory.LoginAsync("alice", password);
 
         var title = $"T03-{Guid.NewGuid():N}";
 

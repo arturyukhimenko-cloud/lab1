@@ -1,3 +1,4 @@
+
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Identity;
 using SecureLab.Api.Data;
@@ -81,24 +82,46 @@ public static class Lab03Identity
                 new RegistrationResponse(user.Id, user.UserName!, user.DisplayName));
         });
 
-        app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn) =>
+        app.MapPost("/api/auth/login", async (
+            LoginInput input,
+            SignInManager<ApplicationUser> signIn,
+            HttpContext context,
+            ILogger<Program> logger) =>
         {
             if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrEmpty(input.Password))
+            {
+                logger.LogInformation("Auth login {Result}, trace {TraceId}",
+                    "failure", context.TraceIdentifier);
                 return Results.Unauthorized();
+            }
+
             var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
+
+            logger.LogInformation("Auth login {Result}, trace {TraceId}",
+                result.Succeeded ? "success" : "failure", context.TraceIdentifier);
+
             return result.Succeeded ? Results.NoContent() : Results.Unauthorized();
-        });
+        }).RequireRateLimiting("auth-login");
 
-        app.MapPost("/api/auth/logout", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
+        app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn) =>
+        {
+            await signIn.SignOutAsync();
+            return Results.NoContent();
+        }).RequireAuthorization();
 
-        // Навмисно хибна навчальна довіра: ЛР 03 замінює заявлений id на verified principal.
         app.MapGet("/api/me", async (HttpContext context, SecureLabDbContext db) =>
         {
-            if (!Guid.TryParse(context.Request.Headers["X-Demo-UserId"], out var claimedId))
-                return Results.StatusCode(StatusCodes.Status501NotImplemented);
-            var user = await db.Users.FindAsync(claimedId);
-            return user is null ? Results.NotFound() : Results.Ok(new { user.Id, user.UserName, user.DisplayName });
-        });
+            var claim = context.User.FindFirst(
+                System.Security.Claims.ClaimTypes.NameIdentifier);
+
+            if (!Guid.TryParse(claim?.Value, out var userId))
+                return Results.Unauthorized();
+
+            var user = await db.Users.FindAsync(userId);
+            return user is null
+                ? Results.Unauthorized()
+                : Results.Ok(new { user.Id, user.UserName, user.DisplayName });
+        }).RequireAuthorization();
 
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();

@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Application.Incidents;
+using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
 using SecureLab.Api.Presentation.Contracts;
 
@@ -19,6 +21,12 @@ public static class IncidentEndpoints
         group.MapGet("/{id:guid}", GetDetailsAsync)
             .WithName("GetIncidentDetails")
             .Produces<IncidentDetailsResponse>()
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
+        group.MapPut("/{id:guid}", UpdateIncidentAsync)
+            .WithName("UpdateIncident")
+            .RequireAuthorization()
+            .Produces(StatusCodes.Status204NoContent)
             .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapGet("/severity-summary", GetSeveritySummaryAsync)
@@ -65,6 +73,27 @@ public static class IncidentEndpoints
             : Results.Ok(incident);
     }
 
+    private static async Task<IResult> UpdateIncidentAsync(
+        Guid id,
+        UpdateIncidentRequest input,
+        SecureLabDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var incident = await db.Set<Incident>()
+            .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+        if (incident is null)
+            return Results.NotFound();
+
+        incident.Title = input.Title;
+        incident.Description = input.Description;
+        incident.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.NoContent();
+    }
+
     private static async Task<IResult> GetSeveritySummaryAsync(
         IncidentQueries queries,
         CancellationToken cancellationToken)
@@ -72,3 +101,5 @@ public static class IncidentEndpoints
         return Results.Ok(await queries.GetSeveritySummaryAsync(cancellationToken));
     }
 }
+
+public sealed record UpdateIncidentRequest(string Title, string Description);

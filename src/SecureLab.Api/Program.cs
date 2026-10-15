@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     Args = args,
     WebRootPath = "Client"
 });
+
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 
@@ -21,6 +22,7 @@ var connectionString = builder.Configuration.GetConnectionString("SecureLab")
 
 builder.Services.AddDbContext<SecureLabDbContext>(options =>
     options.UseNpgsql(connectionString));
+
 builder.Services.AddScoped<IncidentQueries>();
 
 builder.AddLab03Identity();
@@ -28,12 +30,15 @@ builder.AddLab03Identity();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
     options.AddPolicy("auth-login", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                // Локальні інтеграційні тести виконують багато входів.
+                // У Production зберігається початкове обмеження.
+                PermitLimit = builder.Environment.IsDevelopment() ? 100 : 10,
                 Window = TimeSpan.FromSeconds(5),
                 QueueLimit = 0
             }));
@@ -42,7 +47,12 @@ builder.Services.AddRateLimiter(options =>
 var app = builder.Build();
 
 var resetRequested = args.Contains("--reset-database", StringComparer.Ordinal);
-await DatabaseBootstrap.InitializeAsync(app.Services, app.Configuration, app.Environment, resetRequested);
+
+await DatabaseBootstrap.InitializeAsync(
+    app.Services,
+    app.Configuration,
+    app.Environment,
+    resetRequested);
 
 if (resetRequested)
 {
@@ -56,6 +66,7 @@ app.Use(async (context, next) =>
 {
     context.Response.Headers.XContentTypeOptions = "nosniff";
     context.Response.Headers.Append("Referrer-Policy", "no-referrer");
+
     await next(context);
 });
 
@@ -72,12 +83,16 @@ app.UseRateLimiter();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapGet("/health", async (SecureLabDbContext dbContext, CancellationToken cancellationToken) =>
-    await dbContext.Database.CanConnectAsync(cancellationToken)
-        ? Results.Ok(new { status = "ready" })
-        : Results.Problem(
-            title: "База даних недоступна",
-            statusCode: StatusCodes.Status503ServiceUnavailable))
+app.MapGet(
+    "/health",
+    async (
+        SecureLabDbContext dbContext,
+        CancellationToken cancellationToken) =>
+        await dbContext.Database.CanConnectAsync(cancellationToken)
+            ? Results.Ok(new { status = "ready" })
+            : Results.Problem(
+                title: "База даних недоступна",
+                statusCode: StatusCodes.Status503ServiceUnavailable))
     .WithName("GetHealth")
     .Produces(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);

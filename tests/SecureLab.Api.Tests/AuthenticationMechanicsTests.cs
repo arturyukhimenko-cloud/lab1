@@ -185,7 +185,8 @@ public sealed class AuthenticationMechanicsTests(SecureLabApiFactory factory) : 
         using var host = factory.WithWebHostBuilder(_ => { });
         using var client = host.CreateClient();
 
-        for (var i = 0; i < 10; i++)
+        // У Development ліміт становить 100 запитів за 5 секунд.
+        for (var i = 0; i < 100; i++)
         {
             using var response = await client.PostAsJsonAsync(
                 "/api/auth/login", new { userName = "" });

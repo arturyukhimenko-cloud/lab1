@@ -27,6 +27,10 @@ Vulnerable commit: `d491dc67e29b8527194f2b7a8923496a48a6e424`
 
 Коміт завершення Етапу 2: `53b573e` (підтверджено Git push у `lab/5-browser-xss`).
 
+Коміт завершення Етапу 3: `69e17a7` (`lab5: complete CORS stage 3`, завантажено на GitHub; після нього робоче дерево було чистим).
+
+Поточні зміни Етапу 4 у `Program.cs`: CSP у режимі enforcement; новий коміт ще не створено.
+
 Тег `v0.5.0`: ще не створено.
 
 Гілка `main`: ще не оновлена.
@@ -311,7 +315,7 @@ curl.exe -i -H "Origin: http://localhost:4173" "http://localhost:5080/health"
 8. `curl.exe` прочитав відповіді з HTTP `200` без браузерного SOP/CORS, також із вручну доданими Origins 4173/4174.
 9. Вихідна policy — лише Development і точний `4173`; `4174` не дозволений; XSS/CORS/CSRF/authorization розрізнено в review.
 
-**Результат CP-03:** практичні перевірки Етапу 3 на рівень «Добре» виконано. Фінальний commit ЛР №5, повторна регресія і тег `v0.5.0` належать до наступного етапу. Після зміни `Program.cs` автоматичні тести ще не запускалися: 28/28 — останній підтверджений результат Етапу 2.
+**Результат CP-03:** практичні перевірки Етапу 3 на рівень «Добре» виконано, коміт `69e17a7` завантажено на GitHub. Після змін CORS виконано 28 автоматичних тестів: 28 успішних, 0 помилок, 0 пропущених. Фінальний commit усієї ЛР №5, повторна регресія з CSP і тег `v0.5.0` належать до Етапу 4.
 
 ## Додатково для «Добре»
 
@@ -367,43 +371,89 @@ Review XSS/CORS/CSRF/authorization виконано в розділі «CORS і 
 
 ### CSP
 
+Для рівня «Добре» виконано інвентаризацію ресурсів на всіх трьох сторінках навчального клієнта.
+
 | Директива CSP | Фактичні ресурси застосунку | Обране джерело / причина |
 |---|---|---|
-| default-src | | |
-| script-src | | |
-| style-src | | |
-| connect-src | | |
-| img-src | | |
-| frame-ancestors | | |
+| `default-src` | Резервне правило для ресурсів, не охоплених окремими директивами | `'self'` — за замовчуванням дозволені власні джерела |
+| `script-src` | `app.js`, `browser-lab.js`, `auth-lab.js` | `'self'` — дозволені власні JS-файли; `unsafe-inline` не використовується |
+| `style-src` | `styles.css` головної сторінки | `'self'` — дозволені власні CSS-файли |
+| `connect-src` | Запити `fetch` до API, зокрема `incidents` і `me` | `'self'` — основний клієнт і API працюють на `http://localhost:5080` |
+| `img-src` | Власні ресурси та два SVG-зображення через `data:image/svg+xml` на `auth-lab.html` | `'self' data:` — дозволені потрібні зображення, сторонні HTTP-origins заблоковані |
+| `frame-ancestors` | Штатне вбудовування сторінок в iframe не потрібне | `'none'` — заборона embedding і зменшення ризику clickjacking |
+| `object-src` | Плагінні об'єкти не потрібні | `'none'` — заборона `object`/`embed` |
+| `base-uri` | Зовнішня базова адреса для відносних URL не потрібна | `'self'` — обмеження зміни базового URL |
 
-Місце CSP middleware: визначити під час Етапу 4.
+Файл: `src/SecureLab.Api/Program.cs`.
 
-Режим: enforcement.
+Після `UseStatusCodePages()` додано змінну `csp` та розширено **наявну** middleware захисних заголовків, без створення другої middleware.
 
-Документ 200 і фактичний CSP header: перевірити.
+```csharp
+var csp = "default-src 'self'; " +
+          "script-src 'self'; " +
+          "style-src 'self'; " +
+          "connect-src 'self'; " +
+          "img-src 'self' data:; " +
+          "frame-ancestors 'none'; " +
+          "object-src 'none'; " +
+          "base-uri 'self'";
+```
 
-Кероване порушення через `new Image()` до 4173: виконати та зафіксувати результат.
+CSP задається через `Content-Security-Policy` у режимі **enforcement**. Заголовок `Content-Security-Policy-Report-Only` не застосовувався, оскільки окремий дослід report-only для оцінки «Добре» не обов'язковий.
 
-Для рівня «Добре» окремі докази report-only не обов'язкові.
+Для `/scalar` зроблено точний виняток **лише в Development**: цей сторонній UI документації має власні ресурси. Виняток не послаблює CSP основних сторінок `/`, `/browser-lab.html` та `/auth-lab.html`. Залишковий ризик: ресурси стороннього пакета `/scalar` потребують окремого аналізу.
+
+**Фактичні результати після перезапуску API:**
+
+1. Головна сторінка `/` — `200 OK`, у Response Headers присутній `Content-Security-Policy` із зазначеними директивами.
+2. Контрольований тест `new Image().src = "http://localhost:4173/x.png";` — Console показала порушення `img-src 'self' data:` та повідомлення `The action has been blocked.`
+3. Після оновлення головної сторінки запити до документа, `styles.css`, `app.js`, `incidents` мали `200 OK`.
+4. На `/browser-lab.html` документ і `browser-lab.js` мали `200 OK`.
+5. На `/auth-lab.html` документ, `auth-lab.js`, `me` і два `data:` SVG-ресурси мали `200 OK`; Console після оновлення не показала CSP-помилок.
+6. У Response Headers документа `/auth-lab.html` підтверджено CSP разом із `X-Content-Type-Options: nosniff` та `Referrer-Policy: no-referrer`.
+
+**Висновок:** CSP не заважає завантаженню перевірених штатних ресурсів трьох сторінок і блокує стороннє зображення з origin 4173. Це додатковий рівень захисту, а не заміна виправлення XSS-sink. Повторні перевірки REG-XSS-01 і REG-CORS-01 після ввімкнення CSP виконано успішно; 28 автоматичних тестів пройшли без помилок.
+
+### Фінальна регресія після CSP (Етап 4, кроки 3–4)
+
+Перевірено `IncidentComment.Text`: інцидент Alice `20000000-0000-0000-0000-000000000001` повернув `GET 200`. У Console підтверджено `markerAsText: true`, `injectedImgCount: 0`, `marker: null`. Коментар відображається текстом, а HTML-елемент `img` не створюється.
+
+Перевірено `Incident.Description`: інцидент `20000000-0000-0000-0000-000000000003` повернув `GET 200`. У Console підтверджено `scriptAsText: true`, `htmlElementCount: 0`, `scriptElementPresent: false`. Текст із `<script>` не перетворився на HTML-елемент. Ці DOM-перевірки показують, що виправлений sink лишається безпечним незалежно від блокування JavaScript політикою CSP.
+
+Повторено REG-CORS-01: JavaScript зі сторінки `http://localhost:4173` прочитав відповідь `/health` зі статусом `200` і тілом `{"status":"ready"}`. З `http://localhost:4174` Console показала блокування CORS і `TypeError: Failed to fetch`.
+
+У PowerShell `curl.exe` для `Origin: http://localhost:4173` отримав `200 OK`, `Access-Control-Allow-Origin: http://localhost:4173`, `Access-Control-Allow-Credentials: true`, заголовок `Content-Security-Policy` та `{"status":"ready"}`. Для `Origin: http://localhost:4174` отримано `200 OK` без `Access-Control-Allow-Origin`, із заголовком CSP і тим самим JSON-тілом. Прямий HTTP-запит не підпорядковується браузерним обмеженням CORS.
+
+Після додавання CSP виконано `dotnet test` для `tests/SecureLab.Api.Tests`: 28 тестів успішно, 0 помилок, 0 пропущених; `Build succeeded`.
 
 ### Захисні заголовки
 
 | Header / control | Фактичне значення | Ризик і межа захисту / policy rationale |
 |---|---|---|
-| X-Content-Type-Options | | |
-| Referrer-Policy | | |
-| frame-ancestors | | |
+| `X-Content-Type-Options` | `nosniff` | Зменшує ризик небажаного MIME sniffing. Не замінює правильний серверний `Content-Type` і перевірку даних. |
+| `Referrer-Policy` | `no-referrer` | Не передає адресу попередньої сторінки в заголовку `Referer`. Для основного потоку SecureLab це прийнятно, оскільки для роботи клієнта не потрібен `Referer`. Не замінює заборону зберігати секрети в URL. |
+| `frame-ancestors` у CSP | `'none'` | Забороняє вбудовування сторінки в iframe, зменшує ризик clickjacking. Не замінює авторизацію чи виправлення XSS. |
+
+Фактична перевірка: Chrome DevTools → Network → `auth-lab.html` → Response Headers. На відповіді основного клієнта підтверджено заголовки `Content-Security-Policy`, `X-Content-Type-Options: nosniff` та `Referrer-Policy: no-referrer`.
+
+Політика CSP працює в режимі enforcement. Основний flow обмежений власними ресурсами; вбудовування сторінок заборонено через `frame-ancestors 'none'`.
+
+Виняток `/scalar` існує лише в Development через потреби стороннього інтерфейсу документації; його не слід трактувати як дозвіл послаблювати основну CSP.
 
 ## Підсумкова перевірка
 
-Після виконання всіх етапів доповнити результати:
+Підсумкові результати лабораторної роботи №5 до створення фінального Git-коміту:
 
-- REG-XSS-01 — виконано для двох полів; повторні перевірки Morgan/Bob після fix окремо не проводилися.
-- REG-CORS-01 — браузерні simple/preflight та cookie-дослід Етапу 3 виконані; фінальну регресію повторимо на Етапі 4 перед тегом `v0.5.0`.
-- Перевірка IncidentComment.Text — виконано до та після виправлення.
-- CSP enforcement і захисні заголовки — попереду, Етап 4.
-- Автоматичні тести — 28 із 28 пройшли після Етапу 2; після поточних CORS-змін тести ще не запускалися.
-- Fixed commit — ще не створено.
+- REG-XSS-01 — успішно. Після ввімкнення CSP повторно перевірено `Incident.Description` та `IncidentComment.Text`. HTML-подібний вміст залишився звичайним текстом. Повторні перевірки Morgan/Bob після fix окремо не проводилися.
+- IncidentComment.Text — `markerAsText: true`, `injectedImgCount: 0`, `marker: null`; ін'єктований HTML-елемент `img` не створено.
+- Incident.Description — `scriptAsText: true`, `htmlElementCount: 0`, `scriptElementPresent: false`; елемент `script` не створено.
+- REG-CORS-01 — успішно. Origin `http://localhost:4173` отримує `200 OK`, точний `Access-Control-Allow-Origin` та `Access-Control-Allow-Credentials: true`. Для origin `http://localhost:4174` заголовок `Access-Control-Allow-Origin` відсутній, браузер блокує читання відповіді. Прямі HTTP-запити до `/health` повертають `200 OK` для обох origins.
+- CSP enforcement — успішно. Три основні сторінки SecureLab працюють; стороннє зображення з порту 4173 заблоковано директивою `img-src 'self' data:`.
+- Захисні заголовки — підтверджено `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` та `frame-ancestors 'none'`.
+- Автоматичні тести після додавання CSP — 28 виконано, 28 успішно, 0 помилок, 0 пропущених; `Build succeeded`.
+- Коміт Етапу 2 — `53b573e`.
+- Коміт Етапу 3 — `69e17a7`.
+- Підсумковий fixed commit ЛР №5 — ще не створено.
 - Тег `v0.5.0` — ще не створено.
 - Стан `main` — ще не оновлено.
 
@@ -411,5 +461,6 @@ Review XSS/CORS/CSRF/authorization виконано в розділі «CORS і 
 
 | До | Першопричина | Fix | Retest | Залишковий ризик | Доказ / commit |
 |---|---|---|---|---|---|
-| `innerHTML` для Description та Comment.Text; marker `executed` | Недовірений текст передавався в HTML parser | Спільний `renderText()` із `textContent` | Для обох полів marker — `null`, DOM містить текст, 28/28 тестів | Інші DOM-sinks і CSP ще не перевірено; CORS перевірено на Етапі 3 | Скріншоти Етапу 2; коміт `53b573e` |
-| До policy: 4173 і 4174 блокувалися; `OPTIONS 405` | Відсутність CORS policy для окремого навчального origin | Development `Lab05BrowserProbe` для 4173, `UseCors` до authorization, `.AllowCredentials()` | 4173: GET 200, OPTIONS 204; 4174: без ACAO; cookie 200/401, прямий curl 200 | CORS не захищає від CSRF і не замінює права API | Скріншоти й `curl.exe` Етапу 3; підсумковий commit попереду |
+| `innerHTML` для Description та Comment.Text; marker `executed` | Недовірений текст передавався в HTML parser | Спільний `renderText()` із `textContent` | Для обох полів marker — `null`, DOM містить текст, 28/28 тестів | Інші DOM-sinks і ризики third-party scripts; CSP та CORS перевірено в межах відповідних етапів | Скріншоти Етапу 2; коміт `53b573e` |
+| До policy: 4173 і 4174 блокувалися; `OPTIONS 405` | Відсутність CORS policy для окремого навчального origin | Development `Lab05BrowserProbe` для 4173, `UseCors` до authorization, `.AllowCredentials()` | 4173: GET 200, OPTIONS 204; 4174: без ACAO; cookie 200/401, прямий curl 200 | CORS не захищає від CSRF і не замінює права API | Скріншоти й `curl.exe` Етапу 3; коміт `69e17a7` |
+| До CSP: не було обмежувального CSP header | Браузер не отримував централізованих обмежень джерел ресурсів | CSP enforcement: `script-src`, `style-src`, `connect-src`, `img-src`, `frame-ancestors`, `object-src`, `base-uri` | Основні три сторінки та потрібні ресурси працюють; стороннє зображення з 4173 заблоковано | CSP не замінює виправлення XSS, авторизацію чи перевірку стороннього UI `/scalar` | Network/Console Етапу 4, кроки 1–4; фінальний commit попереду |

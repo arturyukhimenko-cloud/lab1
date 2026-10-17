@@ -7,7 +7,7 @@
 
 ОС: Windows.
 
-Браузер і версія: Chrome, точну версію уточнити.
+Браузер і версія: Chrome; точну версію та платформу перевірити в налаштуваннях браузера.
 
 API: http://localhost:5080
 
@@ -23,7 +23,9 @@ Entry parent: `5f98649e33d1b2e53b1b965892a78ec1f84dd6ed`
 
 Vulnerable commit: `d491dc67e29b8527194f2b7a8923496a48a6e424`
 
-Fixed commit: ще не створено.
+Підсумковий fixed commit ЛР №5: ще не створено.
+
+Коміт завершення Етапу 2: `53b573e` (підтверджено Git push у `lab/5-browser-xss`).
 
 Тег `v0.5.0`: ще не створено.
 
@@ -171,36 +173,145 @@ Retest: після виправлення обидва поля відображ
 
 Висновок CP-02: для обох перевірених полів усунуто небезпечну HTML-інтерпретацію недовірених даних. Виправлення пройшло позитивну регресію та автоматичні тести.
 
-Fixed commit буде створено після завершення оформлення доказів Етапу 2.
+Коміт завершення Етапу 2: `53b573e` (`lab5: fix stored XSS and complete stage 2`). Підсумковий fixed commit усієї ЛР №5 і тег `v0.5.0` ще не створено.
 
 ## CORS і REG-CORS-01 (Для всіх)
 
-Прогноз (Етап 3, крок 1): заповнити до зміни CORS policy.
+### Стенд, origins і прогноз (Етап 3, крок 1)
+
+Стенд: навчальний API `http://localhost:5080`, який працює у `Development`.
+
+Звичайний same-origin клієнт і API мають origin `http://localhost:5080`. Навчальні CORS-probes використовують `http://localhost:4173` (дозволений після налаштування) і `http://localhost:4174` (негативний контроль). Через різні порти ці адреси мають різні origins, хоча належать до одного site `localhost`.
+
+Перед налаштуванням policy перевірено працездатність API через `/health` — `200 OK` із `{"status":"ready"}`.
+
+Прогноз, складений до зміни CORS policy:
 
 | Сценарій | Чи доходить request до API? | Чи може JavaScript прочитати response? | Чому |
 |---|---|---|---|
-| same-origin 5080 → API | | | |
-| simple GET 4173 → API | | | |
-| simple GET 4174 → API | | | |
-| curl/.http → API | | Не застосовується | |
-| preflighted 4173 → API («Добре») | | | |
+| same-origin 5080 → API | Так, якщо API працює | Так за умови дозволу API | Між клієнтом і API немає переходу між origins; CORS не потрібен |
+| simple GET 4173 → API | Так | До policy — ні; після allowlist — так | Browser SOP/CORS керує читанням cross-origin response |
+| simple GET 4174 → API | Так | Ні, бо origin не дозволений | Відсутній `Access-Control-Allow-Origin` |
+| curl/.http → API | Так | Не застосовується; прямий клієнт читає HTTP | Браузерний SOP/CORS не застосовується до `curl.exe` |
+| preflighted GET 4173 → API («Добре») | Спочатку `OPTIONS`; GET — лише після успішного preflight | До policy — ні; після policy — так | Додатковий заголовок `X-Lab-Cors-Probe` спричиняє preflight |
+| preflighted GET 4174 → API («Добре») | `OPTIONS` надсилається; GET не надсилається, якщо preflight не пройде | Ні | Preflight для забороненого origin не отримує CORS-дозволу |
 
-Команди запуску probes: заповнити під час Етапу 3.
+### Запуск навчальних probes (Етап 3, крок 2)
 
-Policy: лише Development, один exact origin `http://localhost:4173`; origin `http://localhost:4174` — негативний контроль.
+API: `http://localhost:5080`. Застосунок доступний через `dotnet run --project src/SecureLab.Api`; PostgreSQL уже запущений окремо.
 
-| Клієнт / простий запит | До policy | Fixed state | Status, ACAO, Console / доказ |
+У PowerShell №3 з кореня `starter-project` запущено:
+
+```powershell
+py -3 -m http.server 4173 --bind localhost --directory demonstrations/cors-probe
+```
+
+У PowerShell №4 запущено:
+
+```powershell
+py -3 -m http.server 4174 --bind localhost --directory demonstrations/cors-probe
+```
+
+Обидві сторінки `/` успішно відкрилися в Chrome та містили поле API URL і кнопку GET. Це лише локальні демонстраційні origins; окремі фронтенд-збірки не потрібні.
+
+### Стан до CORS policy (Етап 3, кроки 2–3)
+
+Запит у Console із `http://localhost:4173` до `http://localhost:5080/health`: сервер повернув HTTP `200 OK`, але браузер показав `No 'Access-Control-Allow-Origin' header` і `TypeError: Failed to fetch`. У Network підтверджено `Origin: http://localhost:4173`.
+
+Простий GET із `http://localhost:4174`: сервер так само повернув `200 OK`, але JavaScript не зміг прочитати відповідь через CORS.
+
+Для preflight-запитів із заголовком `X-Lab-Cors-Probe: stage-3` браузер надіслав `OPTIONS` із `Access-Control-Request-Method: GET` і `Access-Control-Request-Headers: x-lab-cors-probe`. До налаштування policy для обох origins отримано `405 Method Not Allowed`, без CORS-дозволу. Основний GET після невдалого preflight не запускався.
+
+### Налаштована policy та middleware (Етап 3, крок 3)
+
+Файл: `src/SecureLab.Api/Program.cs`. Політика `Lab05BrowserProbe` реєструється лише в `Development` через `builder.Services.AddCors()` до `builder.Build()`.
+
+Кінцевий навчальний варіант:
+
+```csharp
+policy.WithOrigins("http://localhost:4173")
+      .WithMethods("GET")
+      .WithHeaders("X-Lab-Cors-Probe")
+      .AllowCredentials();
+```
+
+`UseRouting()` розміщено перед умовним `UseCors("Lab05BrowserProbe")`; далі йдуть `UseAuthentication()`, `UseAuthorization()` та `UseRateLimiter()`. Це дозволяє застосовувати CORS також до відповідей `401/403`. У Production ця навчальна policy не реєструється й не застосовується. `AllowAnyOrigin()` та неконтрольоване відбиття будь-якого Origin не використовуються.
+
+Для основного браузерного GET/preflight на кроці 4 `AllowCredentials()` спочатку не застосовувався; його додано для cookie-досліду кроку 5, як вимагає рівень «Добре».
+
+### REG-CORS-01 — фактичні результати до і після (Етап 3, кроки 4–7)
+
+| Клієнт / запит | До policy | Fixed state | HTTP / CORS / доказ |
 |---|---|---|---|
-| Same-origin 5080 | | | |
-| Allowed 4173 | | | |
-| Disallowed 4174 | | | |
-| Direct HTTP / curl | | | |
+| Same-origin 5080 → API | API `/health`: `200 OK`; окремого browser trace для цього сценарію не фіксували | Same-origin не потребує CORS | PowerShell, `/health`; не приписуємо окрему браузерну перевірку |
+| Простий GET із 4173 до `/health` | API `200`, але JavaScript: `Failed to fetch` | JS отримав `{status: 200, body: '{"status":"ready"}'}` | Network: `Access-Control-Allow-Origin: http://localhost:4173` |
+| Простий GET із 4174 до `/health` | API `200`, JS заблокований CORS | API `200`, JS і надалі заблокований CORS | Відсутній `Access-Control-Allow-Origin`; Console `Failed to fetch` |
+| Preflight 4173 із `X-Lab-Cors-Probe` | `OPTIONS 405`, actual GET не надіслано | `OPTIONS 204`, потім `GET 200`, JS читає відповідь | `Access-Control-Allow-Origin: http://localhost:4173`, `Access-Control-Allow-Methods: GET`, `Access-Control-Allow-Headers: X-Lab-Cors-Probe` |
+| Preflight 4174 із `X-Lab-Cors-Probe` | `OPTIONS 405`, CORS-дозволу немає | `OPTIONS 204` без CORS-дозволу; actual GET заблоковано браузером | Network: `Origin: http://localhost:4174`, `Access-Control-Allow-Origin` відсутній |
+| Авторизований probe 4173 → `/api/incidents` | Окремо до policy з cookie не перевіряли | HTTP `200`, JSON доступний сторінці | `Cookie` у request; `Access-Control-Allow-Origin: http://localhost:4173`, `Access-Control-Allow-Credentials: true` |
+| Авторизований probe 4174 → `/api/incidents` | Окремо до policy з cookie не перевіряли | API `200`, але JS не читає відповідь | `Cookie` у request, без `Access-Control-Allow-Origin`; сторінка повідомляє про блокування |
+| Неавторизований probe 4173 → `/api/incidents` | Не перевіряли | HTTP `401 Unauthorized`, JSON-помилка доступна JS | Приватне вікно без входу; ACAO для 4173 та `Access-Control-Allow-Credentials: true`; cookie відсутня |
+| Прямий HTTP (`curl.exe`) → `/health` | Окремо до policy не перевіряли | HTTP `200`, тіло `{"status":"ready"}` доступне | Запити без `Origin`, з `Origin: 4174` (ACAO немає) та з `Origin: 4173` (ACAO і ACAC є) |
 
-REG-CORS-01: заповнити після браузерних перевірок та порівняння actual HTTP response headers для Origin 4173 і 4174.
+Для `OPTIONS 204` забороненого 4174 позитивного CORS-рішення немає: сам HTTP-статус `204` не означає дозвіл, якщо відсутній `Access-Control-Allow-Origin`.
 
-Перевірка порядку через відповідь 401 без cross-origin cookie: виконати.
+### Cookie і credentials (Етап 3, крок 5, «Добре»)
 
-Пояснення різниці browser/direct HTTP: заповнити після досліду.
+Після ввімкнення `.AllowCredentials()` користувач Alice ввійшов через `http://localhost:5080/auth-lab.html` (`Login: 204`). У тому самому вікні з `http://localhost:4173` кнопка GET на `/api/incidents` повернула `200` і JSON. У Network підтверджено присутність cookie без потреби копіювати її значення. Response містив `Access-Control-Allow-Origin: http://localhost:4173` та `Access-Control-Allow-Credentials: true`.
+
+Для `http://localhost:4174` запит `/api/incidents` також дійшов до API разом із cookie та отримав `200`, але браузер не дав сторінці прочитати відповідь: дозволу ACAO для 4174 немає.
+
+Тимчасово вилучено `.AllowCredentials()` із `Program.cs` та перезапущено API. Із дозволеного `4173` credentialed-запит `/api/incidents` отримав `200` на сервері, але браузер показав помилку: `Access-Control-Allow-Credentials` відсутній, хоча режим credentials дорівнює `include`. Після негативного контролю `.AllowCredentials()` повернуто, API перезапущено.
+
+У приватному вікні без авторизації GET із 4173 до `/api/incidents` повернув `401 Unauthorized`; JavaScript прочитав текст відмови. У Network підтверджено ACAO `http://localhost:4173`, ACAC `true` і відсутність cookie в запиті. Це підтверджує правильний порядок CORS перед авторизацією, але не замінює перевірку прав доступу.
+
+**Конфіденційність доказів:** на ранніх скріншотах Network було видно повне значення session cookie. Перед включенням до звіту необхідно приховати це значення або повторно зняти скріншоти зі згорнутими Request Headers. Секретні cookie, паролі й токени не зберігати в документах або Git. Використаний навчальний сеанс слід завершити та оновити після тесту.
+
+### Прямий HTTP і кінцевий стан (Етап 3, кроки 6–7)
+
+У PowerShell №1 виконано:
+
+```powershell
+curl.exe -i http://localhost:5080/health
+curl.exe -i -H "Origin: http://localhost:4174" "http://localhost:5080/health"
+curl.exe -i -H "Origin: http://localhost:4173" "http://localhost:5080/health"
+```
+
+Усі три прямі запити повернули `HTTP/1.1 200 OK` та `{"status":"ready"}`. Для `Origin: http://localhost:4174` заголовок ACAO був відсутній; для `Origin: http://localhost:4173` сервер повернув `Access-Control-Allow-Origin: http://localhost:4173` і `Access-Control-Allow-Credentials: true`.
+
+Прямий HTTP-клієнт не виконує браузерну SOP/CORS-перевірку, однак серверна автентифікація, авторизація та перевірка даних залишаються чинними. CORS не є механізмом серверного обмеження всіх HTTP-запитів.
+
+Зафіксований кінцевий стан `Program.cs` для ЛР №5: одна навчальна Development policy, точний origin 4173, дозволені лише GET і `X-Lab-Cors-Probe`, `.AllowCredentials()`, без дозволу для 4174. Production перевірятиметься окремо на підсумковому етапі; тут не заявляємо про проведений Production-запуск.
+
+### Review XSS, CORS, CSRF та авторизації (Етап 3, крок 8, «Добре»)
+
+**XSS** — виконання недовіреного JavaScript через небезпечне відображення даних у браузері. У SecureLab Етапу 2 вразливі `Incident.Description` та `IncidentComment.Text` виправлено спільною функцією `renderText()` із `textContent`. Це зменшує ризик виконання збереженого HTML/JS як коду.
+
+**CORS** — браузерний механізм дозволу JavaScript читати відповідь іншого origin. У нашому стенді 4173 дозволений, 4174 заблокований для читання, але GET із 4174 все одно міг дійти до API та повернути HTTP 200. CORS не є автентифікацією, авторизацією чи повноцінним захистом API від прямого HTTP-клієнта.
+
+**CSRF** — ризик небажаного запиту від імені користувача з активною сесією. Навіть якщо браузер не дозволить зловмисній сторінці прочитати response, деякі запити з cookie можуть бути надіслані. Для state-changing дій потрібен окремий antiforgery/CSRF-контроль; реалізація належить до ЛР №6, а не до цього кроку.
+
+**Авторизація** — перевірка сервером права користувача виконати операцію. Без входу запит із 4173 повернув `401 Unauthorized`, хоча CORS дозволив прочитати відповідь. Наявність CORS-дозволу не дає автоматично доступу до захищених даних.
+
+Порти 4173, 4174 та 5080 — різні origins, але той самий `localhost` site; тому це не доказ поведінки SameSite для справді cross-site сценаріїв. Навчальна CORS policy обмежена Development, а кінцевий стан не використовує `AllowAnyOrigin()`.
+
+**Для DEL-03:** цей короткий review перенести до підсумкового звіту ЛР №5 під час оформлення після Етапу 4; окремий файл для цього кроку не створюємо.
+
+### Контрольна точка CP-03
+
+Підтверджено фактичними скріншотами та результатами команд:
+
+1. API `/health` працює (`200 OK`), сторінки probes 4173 та 4174 запускаються окремо.
+2. До policy прості GET із 4173/4174 доходять до API, але JavaScript не читає responses.
+3. До policy preflight `OPTIONS` із обох origins мав HTTP `405`, після policy дозволений 4173 має `204` із необхідними CORS-заголовками.
+4. Заборонений 4174 після policy має preflight `204` без ACAO, тому actual request блоковано; простий GET дає `200` на API, але відповідь недоступна JS.
+5. Користувач Alice із cookie отримав `200` і читабельний JSON через 4173; через 4174 JavaScript відповіді не отримав.
+6. Тимчасове вимкнення `.AllowCredentials()` викликало очікувану browser CORS-помилку для credentialed GET; параметр повернуто.
+7. В інкогніто без cookie отримано `401 Unauthorized` із ACAO для 4173 та ACAC `true`, доступний JavaScript.
+8. `curl.exe` прочитав відповіді з HTTP `200` без браузерного SOP/CORS, також із вручну доданими Origins 4173/4174.
+9. Вихідна policy — лише Development і точний `4173`; `4174` не дозволений; XSS/CORS/CSRF/authorization розрізнено в review.
+
+**Результат CP-03:** практичні перевірки Етапу 3 на рівень «Добре» виконано. Фінальний commit ЛР №5, повторна регресія і тег `v0.5.0` належать до наступного етапу. Після зміни `Program.cs` автоматичні тести ще не запускалися: 28/28 — останній підтверджений результат Етапу 2.
 
 ## Додатково для «Добре»
 
@@ -238,7 +349,7 @@ GUID коментаря: `30000000-0000-0000-0000-000000000005`.
 
 ```javascript
 function renderText(element, text) {
-  element.textContent = text ?? "";
+    element.textContent = text ?? "";
 }
 ```
 
@@ -246,15 +357,13 @@ function renderText(element, text) {
 
 ### Preflight і cookie
 
-Preflight із 4173 та 4174: виконати на Етапі 3.
+Етап 3 виконано. Для `4173` після CORS policy підтверджено `OPTIONS 204` із `Access-Control-Allow-Origin: http://localhost:4173`, `Access-Control-Allow-Methods: GET`, `Access-Control-Allow-Headers: X-Lab-Cors-Probe`. Для `4174` відповідь `OPTIONS 204` не містила ACAO, тому браузер не допустив actual GET.
 
-Перевірити OPTIONS, фактичний GET або його блокування, Origin, method та headers.
+Cookie-дослід виконано із `credentials: "include"`: авторизований Alice отримав `200` із 4173, а 4174 — CORS-блокування читання відповіді, хоча cookie була в request і сервер повернув `200`. Негативний контроль без `.AllowCredentials()` дав очікувану browser CORS-помилку. У приватному вікні без входу отримано читабельну відповідь `401` з ACAO/ACAC для 4173.
 
-Cookie-дослід: дозволений origin 4173, заборонений 4174, тимчасовий контроль без AllowCredentials та відповідь 401 без входу.
+Фінальна `.AllowCredentials()` залишена тільки в `Development` policy для точного origin `http://localhost:4173`. Навчальні ports — same-site localhost, але cross-origin: цей дослід не є перевіркою cross-site SameSite.
 
-Кінцевий `AllowCredentials()` — лише для Development policy з exact origin 4173.
-
-Review XSS/CORS/CSRF/authorization — додати посилання на DEL-03 після відповідних перевірок.
+Review XSS/CORS/CSRF/authorization виконано в розділі «CORS і REG-CORS-01», крок 8; після завершення Етапу 4 перенести стислий review до DEL-03.
 
 ### CSP
 
@@ -290,10 +399,10 @@ Review XSS/CORS/CSRF/authorization — додати посилання на DEL-
 Після виконання всіх етапів доповнити результати:
 
 - REG-XSS-01 — виконано для двох полів; повторні перевірки Morgan/Bob після fix окремо не проводилися.
-- REG-CORS-01 — попереду, Етап 3.
+- REG-CORS-01 — браузерні simple/preflight та cookie-дослід Етапу 3 виконані; фінальну регресію повторимо на Етапі 4 перед тегом `v0.5.0`.
 - Перевірка IncidentComment.Text — виконано до та після виправлення.
 - CSP enforcement і захисні заголовки — попереду, Етап 4.
-- Початкові автоматичні тести — 28 із 28 пройшли після змін.
+- Автоматичні тести — 28 із 28 пройшли після Етапу 2; після поточних CORS-змін тести ще не запускалися.
 - Fixed commit — ще не створено.
 - Тег `v0.5.0` — ще не створено.
 - Стан `main` — ще не оновлено.
@@ -302,4 +411,5 @@ Review XSS/CORS/CSRF/authorization — додати посилання на DEL-
 
 | До | Першопричина | Fix | Retest | Залишковий ризик | Доказ / commit |
 |---|---|---|---|---|---|
-| `innerHTML` для Description та Comment.Text; marker `executed` | Недовірений текст передавався в HTML parser | Спільний `renderText()` із `textContent` | Для обох полів marker — `null`, DOM містить текст, 28/28 тестів | Інші sinks, CORS і CSP ще не перевірено | Скріншоти Етапу 2; fixed commit очікується |
+| `innerHTML` для Description та Comment.Text; marker `executed` | Недовірений текст передавався в HTML parser | Спільний `renderText()` із `textContent` | Для обох полів marker — `null`, DOM містить текст, 28/28 тестів | Інші DOM-sinks і CSP ще не перевірено; CORS перевірено на Етапі 3 | Скріншоти Етапу 2; коміт `53b573e` |
+| До policy: 4173 і 4174 блокувалися; `OPTIONS 405` | Відсутність CORS policy для окремого навчального origin | Development `Lab05BrowserProbe` для 4173, `UseCors` до authorization, `.AllowCredentials()` | 4173: GET 200, OPTIONS 204; 4174: без ACAO; cookie 200/401, прямий curl 200 | CORS не захищає від CSRF і не замінює права API | Скріншоти й `curl.exe` Етапу 3; підсумковий commit попереду |
